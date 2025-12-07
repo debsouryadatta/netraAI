@@ -14,7 +14,8 @@ export async function generateAIResponse(
   userMessage: string,
   conversationId: string,
   conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [],
-  currentLanguage: SupportedLanguage = 'kannada'
+  currentLanguage: SupportedLanguage = 'kannada',
+  images?: Array<{ data: string; mimeType: string }>
 ): Promise<string> {
   if (!process.env.GOOGLE_GEMINI_API_KEY) {
     throw new Error('GOOGLE_GEMINI_API_KEY is not configured')
@@ -29,7 +30,7 @@ export async function generateAIResponse(
 
     // Build conversation history as Content array
     // Format: [{ role: 'user', parts: [{ text: '...' }] }, { role: 'model', parts: [{ text: '...' }] }]
-    const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [
+    const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text?: string; inlineData?: { data: string; mimeType: string } }> }> = [
       {
         role: 'user',
         parts: [{ text: systemInstruction }],
@@ -42,11 +43,40 @@ export async function generateAIResponse(
         role: (msg.role === 'user' ? 'user' : 'model') as 'user' | 'model',
         parts: [{ text: msg.content }],
       })),
-      {
-        role: 'user',
-        parts: [{ text: userMessage }],
-      },
     ]
+
+    // Build the current user message with optional images
+    const userMessageParts: Array<{ text?: string; inlineData?: { data: string; mimeType: string } }> = []
+    
+    // Add images first if provided (so AI sees them before the question)
+    if (images && images.length > 0) {
+      images.forEach((image) => {
+        userMessageParts.push({
+          inlineData: {
+            data: image.data,
+            mimeType: image.mimeType,
+          },
+        })
+      })
+    }
+    
+    // Add text if provided (after images so context is clear)
+    if (userMessage) {
+      userMessageParts.push({ text: userMessage })
+    } else if (images && images.length > 0) {
+      // If only images are provided without text, add a prompt to describe/analyze
+      const imagePrompt = currentLanguage === 'kannada'
+        ? 'ಈ ಚಿತ್ರದಲ್ಲಿ ಏನಿದೆ? ವಿವರವಾಗಿ ವಿವರಿಸಿ.'
+        : currentLanguage === 'hindi'
+        ? 'इस छवि में क्या है? विस्तार से वर्णन करें।'
+        : 'What is in this image? Please describe it in detail.'
+      userMessageParts.push({ text: imagePrompt })
+    }
+
+    contents.push({
+      role: 'user',
+      parts: userMessageParts,
+    })
 
     // Use the new @google/genai SDK API
     // According to GitHub docs: ai.models.generateContent({ model, contents, config })

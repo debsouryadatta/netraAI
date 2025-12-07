@@ -13,16 +13,25 @@ import {
   SheetTitle,
   SheetTrigger,
 } from '@/components/ui/sheet'
-import { Send, Mic, History, Plus, MessageSquare } from 'lucide-react'
+import { Send, Mic, History, Plus, MessageSquare, Image as ImageIcon, X, File } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDistanceToNow } from 'date-fns'
 import { detectLanguageRequest, type SupportedLanguage, languageNames, languageNativeNames } from '@/lib/language-detector'
+
+interface FileAttachment {
+  file?: File // Only present for newly selected files
+  preview: string
+  type: 'image' | 'file'
+  name?: string
+  size?: number
+}
 
 interface Message {
   id: string
   role: 'user' | 'assistant'
   content: string
   createdAt: Date
+  attachments?: FileAttachment[]
 }
 
 interface Conversation {
@@ -48,6 +57,8 @@ export function ChatMode() {
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [isLoadingConversations, setIsLoadingConversations] = useState(false)
   const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>('kannada')
+  const [selectedFiles, setSelectedFiles] = useState<FileAttachment[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -58,6 +69,14 @@ export function ChatMode() {
     // Load conversation history on mount
     loadConversation()
     loadConversations()
+  }, [])
+
+  // Cleanup object URLs on unmount
+  useEffect(() => {
+    return () => {
+      // Cleanup will happen when component unmounts
+      // URLs are already cleaned up when files are removed or messages are sent
+    }
   }, [])
 
   const loadConversations = async () => {
@@ -123,8 +142,38 @@ export function ChatMode() {
     }
   }
 
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    const newAttachments: FileAttachment[] = files.map((file) => {
+      const isImage = file.type.startsWith('image/')
+      return {
+        file,
+        preview: isImage ? URL.createObjectURL(file) : '',
+        type: isImage ? 'image' : 'file',
+        name: file.name,
+        size: file.size,
+      }
+    })
+    setSelectedFiles((prev) => [...prev, ...newAttachments])
+    // Reset input to allow selecting the same file again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
+    }
+  }
+
+  const removeFile = (index: number) => {
+    setSelectedFiles((prev) => {
+      const updated = prev.filter((_, i) => i !== index)
+      // Revoke object URL to prevent memory leak
+      if (prev[index].preview) {
+        URL.revokeObjectURL(prev[index].preview)
+      }
+      return updated
+    })
+  }
+
   const sendMessage = async () => {
-    if (!input.trim() || isLoading) return
+    if ((!input.trim() && selectedFiles.length === 0) || isLoading) return
 
     const userMessageText = input.trim()
     
@@ -134,26 +183,44 @@ export function ChatMode() {
       setCurrentLanguage(detectedLanguage)
     }
 
+    // Create attachments for display (without File objects for serialization)
+    const displayAttachments: FileAttachment[] = selectedFiles.map((attachment) => ({
+      preview: attachment.preview,
+      type: attachment.type,
+      name: attachment.name,
+      size: attachment.size,
+    }))
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: userMessageText,
+      content: userMessageText || (selectedFiles.length > 0 ? 'Sent an image/file' : ''),
       createdAt: new Date(),
+      attachments: displayAttachments,
     }
 
     setMessages((prev) => [...prev, userMessage])
     setInput('')
+    const filesToSend = [...selectedFiles]
+    setSelectedFiles([])
     setIsLoading(true)
 
     try {
+      // Create FormData to send files
+      const formData = new FormData()
+      formData.append('conversationId', conversationId || '')
+      formData.append('message', userMessageText)
+      formData.append('currentLanguage', detectedLanguage || currentLanguage)
+      
+      // Append all files
+      filesToSend.forEach((attachment, index) => {
+        formData.append(`file_${index}`, attachment.file)
+      })
+      formData.append('fileCount', filesToSend.length.toString())
+
       const response = await fetch('/api/chat/message', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversationId,
-          message: userMessage.content,
-          currentLanguage: detectedLanguage || currentLanguage,
-        }),
+        body: formData,
       })
 
       if (!response.ok) throw new Error('Failed to send message')
@@ -178,9 +245,18 @@ export function ChatMode() {
       }
       // Refresh conversation list after sending message
       await loadConversations()
+      
+      // Clean up object URLs
+      filesToSend.forEach((attachment) => {
+        if (attachment.preview) {
+          URL.revokeObjectURL(attachment.preview)
+        }
+      })
     } catch (error) {
       console.error('Failed to send message:', error)
       setMessages((prev) => prev.slice(0, -1)) // Remove user message on error
+      // Restore files on error
+      setSelectedFiles(filesToSend)
     } finally {
       setIsLoading(false)
     }
@@ -194,9 +270,9 @@ export function ChatMode() {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Header with History Button */}
-      <div className="border-b bg-background px-4 py-3">
+      <div className="flex-shrink-0 border-b bg-background px-4 py-3">
         <div className="mx-auto flex max-w-3xl items-center justify-between">
           <h2 className="text-lg font-semibold">Netra AI</h2>
           <Sheet open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
@@ -274,7 +350,8 @@ export function ChatMode() {
       </div>
 
       {/* Messages Area */}
-      <ScrollArea className="flex-1 p-4">
+      <ScrollArea className="flex-1 min-h-0">
+        <div className="p-4">
         <div className="mx-auto max-w-3xl space-y-4">
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center py-12 text-center">
@@ -342,7 +419,39 @@ export function ChatMode() {
                     : 'bg-muted'
                 )}
               >
-                <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                {message.attachments && message.attachments.length > 0 && (
+                  <div className={cn(
+                    'mb-2 flex flex-wrap gap-2',
+                    message.role === 'user' ? 'flex-row-reverse' : 'flex-row'
+                  )}>
+                    {message.attachments.map((attachment, idx) => (
+                      <div key={idx} className="relative">
+                        {attachment.type === 'image' ? (
+                          <img
+                            src={attachment.preview}
+                            alt={`Attachment ${idx + 1}`}
+                            className="max-h-48 max-w-xs rounded-lg object-cover"
+                          />
+                        ) : (
+                          <div className="flex items-center gap-2 rounded-lg border bg-background p-2">
+                            <File className="h-4 w-4" />
+                            <span className="text-xs truncate max-w-[200px]">
+                              {attachment.name || `File ${idx + 1}`}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {message.content && (
+                  <p className={cn(
+                    'text-sm whitespace-pre-wrap',
+                    message.role === 'user' ? 'text-primary-foreground' : ''
+                  )}>
+                    {message.content}
+                  </p>
+                )}
               </div>
 
               {message.role === 'user' && user && (
@@ -373,17 +482,74 @@ export function ChatMode() {
 
           <div ref={scrollRef} />
         </div>
+      </div>
       </ScrollArea>
 
       {/* Input Area */}
-      <div className="border-t bg-background p-4">
+      <div className="flex-shrink-0 border-t bg-background p-4">
         <div className="mx-auto max-w-3xl">
+          {selectedFiles.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {selectedFiles.map((attachment, index) => (
+                <div key={index} className="relative">
+                  {attachment.type === 'image' ? (
+                    <div className="relative">
+                      <img
+                        src={attachment.preview}
+                        alt={`Preview ${index + 1}`}
+                        className="h-20 w-20 rounded-lg object-cover border"
+                      />
+                      <Button
+                        variant="destructive"
+                        size="icon"
+                        className="absolute -right-2 -top-2 h-5 w-5 rounded-full"
+                        onClick={() => removeFile(index)}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="relative flex items-center gap-2 rounded-lg border bg-muted p-2 pr-8">
+                      <File className="h-4 w-4" />
+                      <span className="text-xs truncate max-w-[150px]">
+                        {attachment.name || 'Unknown file'}
+                      </span>
+                      <Button
+                        variant="destructive"
+                        size="icon"
+                        className="absolute right-1 h-5 w-5 rounded-full"
+                        onClick={() => removeFile(index)}
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           <div className="flex gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,.pdf,.doc,.docx,.txt"
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isLoading}
+            >
+              <ImageIcon className="h-4 w-4" />
+            </Button>
             <Input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="Ask your question..."
+              placeholder={selectedFiles.length > 0 ? "Ask about the image..." : "Ask your question or upload an image..."}
               disabled={isLoading}
               className="flex-1"
             />
@@ -397,7 +563,10 @@ export function ChatMode() {
             >
               <Mic className="h-4 w-4" />
             </Button>
-            <Button onClick={sendMessage} disabled={isLoading || !input.trim()}>
+            <Button 
+              onClick={sendMessage} 
+              disabled={isLoading || (!input.trim() && selectedFiles.length === 0)}
+            >
               <Send className="h-4 w-4" />
             </Button>
           </div>

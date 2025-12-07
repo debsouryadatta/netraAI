@@ -12,11 +12,49 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { conversationId, message, currentLanguage } = await req.json()
+    // Check if request is FormData (file upload) or JSON
+    const contentType = req.headers.get('content-type') || ''
+    let conversationId: string | null = null
+    let message: string = ''
+    let currentLanguage: SupportedLanguage = 'kannada'
+    let imageFiles: Array<{ data: string; mimeType: string }> = []
 
-    if (!message || typeof message !== 'string') {
+    if (contentType.includes('multipart/form-data')) {
+      // Handle FormData with files
+      const formData = await req.formData()
+      conversationId = formData.get('conversationId') as string || null
+      message = (formData.get('message') as string) || ''
+      currentLanguage = (formData.get('currentLanguage') as SupportedLanguage) || 'kannada'
+      
+      const fileCount = parseInt(formData.get('fileCount') as string) || 0
+      
+      // Process image files
+      for (let i = 0; i < fileCount; i++) {
+        const file = formData.get(`file_${i}`) as File | null
+        if (file) {
+          // Only process image files for now (Gemini supports images)
+          if (file.type.startsWith('image/')) {
+            const arrayBuffer = await file.arrayBuffer()
+            const buffer = Buffer.from(arrayBuffer)
+            const base64 = buffer.toString('base64')
+            imageFiles.push({
+              data: base64,
+              mimeType: file.type,
+            })
+          }
+        }
+      }
+    } else {
+      // Handle JSON request (backward compatibility)
+      const body = await req.json()
+      conversationId = body.conversationId || null
+      message = body.message || ''
+      currentLanguage = body.currentLanguage || 'kannada'
+    }
+
+    if (!message && imageFiles.length === 0) {
       return NextResponse.json(
-        { error: 'Message is required' },
+        { error: 'Message or image is required' },
         { status: 400 }
       )
     }
@@ -74,11 +112,13 @@ export async function POST(req: Request) {
     })
 
     // Generate AI response using Google Gemini 3 Pro
+    // Pass images if available
     const aiResponse = await generateAIResponse(
       message,
       conversation.id,
       conversationHistory,
-      language
+      language,
+      imageFiles.length > 0 ? imageFiles : undefined
     )
 
     // Save assistant message
