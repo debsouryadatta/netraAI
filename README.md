@@ -1,4 +1,4 @@
-# ಕನ್ನಡ AI ಗುರು (Kannada AI Guru)
+# Netra AI - Konnect and Learn
 
 A Next.js application for learning any subject in simple Kannada with AI assistance, featuring both chat and real-time audio/video modes.
 
@@ -17,7 +17,7 @@ A Next.js application for learning any subject in simple Kannada with AI assista
 - **Database**: PostgreSQL with Prisma
 - **Authentication**: Clerk
 - **AI Services**: 
-  - Google Gemini 1.5 Pro (Chat)
+  - Google Gemini 2.0 Flash (Chat)
   - Google Realtime API (Audio/Video)
 - **UI Components**: shadcn/ui (Radix UI)
 
@@ -52,10 +52,7 @@ CLERK_SECRET_KEY="sk_test_..."
 CLERK_WEBHOOK_SECRET="whsec_..."
 
 # Google AI Services
-# Note: Realtime API can use the same key as Gemini API
 GOOGLE_GEMINI_API_KEY="your-api-key"
-# Optional: Only set this if you have a separate Realtime API key
-# GOOGLE_REALTIME_API_KEY="your-realtime-api-key"
 ```
 
 ### 3. Database Setup
@@ -84,11 +81,6 @@ pnpm db:studio
 1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
 2. Create an API key
 3. Add to `GOOGLE_GEMINI_API_KEY` in `.env`
-
-#### Realtime API:
-1. Enable Realtime API in [Google Cloud Console](https://console.cloud.google.com/)
-2. Create credentials/API key
-3. Add to `GOOGLE_REALTIME_API_KEY` in `.env`
 
 ### 6. Run Development Server
 
@@ -157,7 +149,7 @@ pnpm lint
 
 ## Notes
 
-- The application uses Google Gemini 1.5 Pro for chat. Update the model name in `lib/ai-service.ts` when Gemini 3 Pro becomes available.
+- The application uses Google Gemini 2.0 Flash for chat. Update the model name in `lib/ai-service.ts` when Gemini 3 Pro becomes available.
 - Realtime API integration requires proper audio/video stream handling on the client side.
 - Ensure all environment variables are set before running the application.
 
