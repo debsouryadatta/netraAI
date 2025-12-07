@@ -16,6 +16,7 @@ import {
 import { Send, Mic, History, Plus, MessageSquare } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { formatDistanceToNow } from 'date-fns'
+import { detectLanguageRequest, type SupportedLanguage, languageNames, languageNativeNames } from '@/lib/language-detector'
 
 interface Message {
   id: string
@@ -46,6 +47,7 @@ export function ChatMode() {
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [isLoadingConversations, setIsLoadingConversations] = useState(false)
+  const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>('kannada')
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -111,6 +113,7 @@ export function ChatMode() {
         if (data.conversation) {
           setConversationId(data.conversation.id)
           setMessages([])
+          setCurrentLanguage('kannada') // Reset to default language
           setIsHistoryOpen(false)
           await loadConversations() // Refresh conversation list
         }
@@ -123,10 +126,18 @@ export function ChatMode() {
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return
 
+    const userMessageText = input.trim()
+    
+    // Detect language change request
+    const detectedLanguage = detectLanguageRequest(userMessageText)
+    if (detectedLanguage && detectedLanguage !== currentLanguage) {
+      setCurrentLanguage(detectedLanguage)
+    }
+
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: input.trim(),
+      content: userMessageText,
       createdAt: new Date(),
     }
 
@@ -141,12 +152,18 @@ export function ChatMode() {
         body: JSON.stringify({
           conversationId,
           message: userMessage.content,
+          currentLanguage: detectedLanguage || currentLanguage,
         }),
       })
 
       if (!response.ok) throw new Error('Failed to send message')
 
       const data = await response.json()
+
+      // Update language if changed
+      if (data.language && data.language !== currentLanguage) {
+        setCurrentLanguage(data.language)
+      }
 
       const assistantMessage: Message = {
         id: data.message.id,
@@ -263,23 +280,42 @@ export function ChatMode() {
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <h2 className="mb-2 text-2xl font-semibold">Netra AI</h2>
               <p className="text-muted-foreground">
-                Hello! I am Netra AI. I help you learn any subject in simple Kannada.
+                {currentLanguage === 'kannada'
+                  ? 'ನಮಸ್ಕಾರ! ನಾನು ನೇತ್ರ AI. ನಾನು ನಿಮಗೆ ಸರಳ ಕನ್ನಡದಲ್ಲಿ ಯಾವುದೇ ವಿಷಯವನ್ನು ಕಲಿಸಲು ಸಹಾಯ ಮಾಡುತ್ತೇನೆ.'
+                  : `Hello! I am Netra AI. I help you learn any subject in simple ${languageNames[currentLanguage]}.`}
+              </p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {currentLanguage === 'kannada'
+                  ? 'ಭಾಷೆ ಬದಲಾಯಿಸಲು, "speak in english" ಅಥವಾ "hindi ಮಾತನಾಡಿ" ಎಂದು ಹೇಳಿ'
+                  : `To change language, say "speak in kannada" or "ಕನ್ನಡ ಮಾತನಾಡಿ"`}
               </p>
               <div className="mt-6 flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setInput('ಕ್ವಾಂಟಮ್ ಕಂಪ್ಯೂಟಿಂಗ್ ಎಂದರೇನು?')}
-                >
-                  ಕ್ವಾಂಟಮ್ ಕಂಪ್ಯೂಟಿಂಗ್ ಎಂದರೇನು?
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setInput('ಭಾರತದ ಆರ್ಥಿಕತೆ')}
-                >
-                  ಭಾರತದ ಆರ್ಥಿಕತೆ
-                </Button>
+                {currentLanguage === 'kannada' ? (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setInput('ಕ್ವಾಂಟಮ್ ಕಂಪ್ಯೂಟಿಂಗ್ ಎಂದರೇನು?')}
+                    >
+                      ಕ್ವಾಂಟಮ್ ಕಂಪ್ಯೂಟಿಂಗ್ ಎಂದರೇನು?
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setInput('ಭಾರತದ ಆರ್ಥಿಕತೆ')}
+                    >
+                      ಭಾರತದ ಆರ್ಥಿಕತೆ
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setInput(`Explain quantum computing in ${languageNames[currentLanguage]}`)}
+                  >
+                    Sample Question
+                  </Button>
+                )}
               </div>
             </div>
           )}

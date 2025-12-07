@@ -1,6 +1,7 @@
 import { auth } from '@clerk/nextjs/server'
 import { prisma } from '@/lib/prisma'
 import { generateAIResponse } from '@/lib/ai-service'
+import { detectLanguageRequest, type SupportedLanguage } from '@/lib/language-detector'
 import { NextResponse } from 'next/server'
 
 export async function POST(req: Request) {
@@ -11,7 +12,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { conversationId, message } = await req.json()
+    const { conversationId, message, currentLanguage } = await req.json()
 
     if (!message || typeof message !== 'string') {
       return NextResponse.json(
@@ -19,6 +20,10 @@ export async function POST(req: Request) {
         { status: 400 }
       )
     }
+
+    // Detect language change request from user message
+    const detectedLanguage = detectLanguageRequest(message)
+    const language: SupportedLanguage = detectedLanguage || (currentLanguage || 'kannada')
 
     const dbUser = await prisma.user.findUnique({
       where: { clerkId: userId },
@@ -54,7 +59,7 @@ export async function POST(req: Request) {
     }
 
     // Build conversation history for Gemini
-    const conversationHistory = conversation.messages.map((msg) => ({
+    const conversationHistory = conversation.messages.map((msg: { role: 'user' | 'assistant'; content: string }) => ({
       role: msg.role as 'user' | 'assistant',
       content: msg.content,
     }))
@@ -72,7 +77,8 @@ export async function POST(req: Request) {
     const aiResponse = await generateAIResponse(
       message,
       conversation.id,
-      conversationHistory
+      conversationHistory,
+      language
     )
 
     // Save assistant message
@@ -108,6 +114,7 @@ export async function POST(req: Request) {
         content: assistantMessage.content,
         createdAt: assistantMessage.createdAt,
       },
+      language, // Return current language so client can update
     })
   } catch (error) {
     console.error('Error sending message:', error)

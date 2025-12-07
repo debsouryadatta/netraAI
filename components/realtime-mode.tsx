@@ -2,10 +2,10 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import { Camera, Mic, MicOff, Video, VideoOff } from 'lucide-react'
+import { Camera, Mic, MicOff, Video } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { GoogleGenAI, Modality } from '@google/genai'
-import { detectLanguageRequest, getSystemInstruction, type SupportedLanguage } from '@/lib/language-detector'
+import { detectLanguageRequest, getSystemInstruction, type SupportedLanguage, languageNames, languageNativeNames } from '@/lib/language-detector'
 
 export function RealtimeMode() {
   const [isRecording, setIsRecording] = useState(false)
@@ -13,9 +13,13 @@ export function RealtimeMode() {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [transcript, setTranscript] = useState<string>('')
   const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>('kannada')
+  const [cameraStream, setCameraStream] = useState<MediaStream | null>(null)
+  const [isCapturing, setIsCapturing] = useState(false)
+  const [imageDescription, setImageDescription] = useState<string>('')
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const cameraStreamRef = useRef<MediaStream | null>(null)
   const liveSessionRef = useRef<any>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -34,12 +38,28 @@ export function RealtimeMode() {
     return () => {
       // Cleanup on unmount
       stopSession()
+      stopCamera()
     }
   }, [])
 
-  // Track user input for language detection
-  const userInputRef = useRef<string>('')
+  // Effect to ensure video element gets the stream when cameraStream changes
+  useEffect(() => {
+    if (cameraStream && videoRef.current && cameraStreamRef.current) {
+      // Ensure video element has the stream
+      if (videoRef.current.srcObject !== cameraStreamRef.current) {
+        videoRef.current.srcObject = cameraStreamRef.current
+      }
+      
+      // Ensure video plays
+      if (videoRef.current.paused) {
+        videoRef.current.play().catch((error) => {
+          console.error('Error playing video in useEffect:', error)
+        })
+      }
+    }
+  }, [cameraStream])
 
+  // Handle language change in realtime session
   const handleLanguageChange = (newLanguage: SupportedLanguage) => {
     console.log(`Language change detected: ${currentLanguage} -> ${newLanguage}`)
     setCurrentLanguage(newLanguage)
@@ -47,20 +67,12 @@ export function RealtimeMode() {
     // Update system instruction by sending a text message to the session
     if (liveSessionRef.current) {
       try {
-        // Send a clear instruction to switch language
-        const languageNames: Record<SupportedLanguage, string> = {
-          kannada: 'Kannada',
-          english: 'English',
-          hindi: 'Hindi',
-          tamil: 'Tamil',
-          telugu: 'Telugu',
-          marathi: 'Marathi',
-          gujarati: 'Gujarati',
-          bengali: 'Bengali',
-        }
+        const languageName = languageNames[newLanguage]
+        const nativeName = languageNativeNames[newLanguage]
         
+        // Send instruction to switch language
         liveSessionRef.current.sendRealtimeInput({
-          text: `Please switch to ${languageNames[newLanguage]} language. From now on, respond only in ${languageNames[newLanguage]}.`,
+          text: `Please switch to ${languageName} (${nativeName}) language. From now on, respond only in ${languageName}.`,
         })
         console.log(`Language switched to ${newLanguage}`)
       } catch (error) {
@@ -71,7 +83,7 @@ export function RealtimeMode() {
 
   const startSession = async () => {
     try {
-      // Request media permissions
+      // Request media permissions (audio only, no video streaming)
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: 16000,
@@ -79,21 +91,19 @@ export function RealtimeMode() {
           echoCancellation: true,
           noiseSuppression: true,
         },
-        video: isVideoEnabled,
+        video: false, // Disable video streaming
       })
 
       streamRef.current = stream
 
-      if (videoRef.current && isVideoEnabled) {
-        videoRef.current.srcObject = stream
-      }
+      // Don't set video stream here - camera is handled separately
 
-      // Create session in backend to get config
+      // Create session in backend to get config (audio only)
       const response = await fetch('/api/realtime/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          type: isVideoEnabled ? 'both' : 'audio',
+          type: 'audio', // Always audio only, no video streaming
         }),
       })
 
@@ -113,13 +123,13 @@ export function RealtimeMode() {
 
       const ai = new GoogleGenAI({ apiKey: config.apiKey })
 
-      // Connect to Live API with default Kannada instruction
-      const defaultSystemInstruction = getSystemInstruction('kannada')
+      // Connect to Live API with current language
+      const systemInstruction = getSystemInstruction(currentLanguage)
       const liveSession = await ai.live.connect({
         model: config.model || data.model || 'gemini-2.5-flash-native-audio-preview-09-2025',
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: defaultSystemInstruction,
+          systemInstruction,
         },
         callbacks: {
           onopen: () => {
@@ -128,15 +138,6 @@ export function RealtimeMode() {
           },
           onmessage: (message: any) => {
             console.log('Live API message received:', message)
-            
-            // Check for user input (if available in message)
-            if (message.userInput?.text) {
-              const userText = message.userInput.text
-              const languageRequest = detectLanguageRequest(userText)
-              if (languageRequest && languageRequest !== currentLanguage) {
-                handleLanguageChange(languageRequest)
-              }
-            }
             
             // Handle responses
             if (message.serverContent?.modelTurn?.parts) {
@@ -180,11 +181,10 @@ export function RealtimeMode() {
                   const newTranscript = (transcript ? transcript + ' ' : '') + part.text
                   setTranscript(newTranscript)
                   
-                  // Check for language change request in the AI's response
-                  // (Sometimes the AI might mention language changes)
-                  const languageRequest = detectLanguageRequest(part.text)
-                  if (languageRequest && languageRequest !== currentLanguage) {
-                    handleLanguageChange(languageRequest)
+                  // Check for language change request in the transcript
+                  const detectedLanguage = detectLanguageRequest(newTranscript)
+                  if (detectedLanguage && detectedLanguage !== currentLanguage) {
+                    handleLanguageChange(detectedLanguage)
                   }
                 }
               }
@@ -519,6 +519,9 @@ export function RealtimeMode() {
       streamRef.current = null
     }
 
+    // Stop camera stream
+    stopCamera()
+
     // Stop all scheduled playback
     playbackSourcesRef.current.forEach((source) => {
       try {
@@ -577,19 +580,193 @@ export function RealtimeMode() {
     }
 
     setIsRecording(false)
-    setSessionId(null)
-    setTranscript('')
-    setCurrentLanguage('kannada') // Reset to default language
+        setSessionId(null)
+        setTranscript('')
+        setCurrentLanguage('kannada') // Reset to default language
+    }
+
+  // Initialize camera for photo capture
+  const initializeCamera = async () => {
+    try {
+      // Stop existing camera stream if any
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((track) => track.stop())
+      }
+
+      // Try to get camera stream with flexible constraints
+      let stream: MediaStream
+      try {
+        // First try with back camera (environment)
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'environment',
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        })
+      } catch (error) {
+        // Fallback to any available camera
+        console.log('Back camera not available, trying any camera:', error)
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+          },
+          audio: false,
+        })
+      }
+
+      cameraStreamRef.current = stream
+      setCameraStream(stream)
+
+      // Use setTimeout to ensure video element is rendered
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          // Ensure video plays
+          videoRef.current.play()
+            .then(() => {
+              console.log('Video playback started successfully')
+            })
+            .catch((error) => {
+              console.error('Error playing video:', error)
+              // Try again after a short delay
+              setTimeout(() => {
+                if (videoRef.current) {
+                  videoRef.current.play().catch((err) => {
+                    console.error('Retry video play failed:', err)
+                  })
+                }
+              }, 300)
+            })
+        } else {
+          console.warn('Video ref is null, video element may not be rendered yet')
+          // Retry after a delay
+          setTimeout(() => {
+            if (videoRef.current && stream) {
+              videoRef.current.srcObject = stream
+              videoRef.current.play().catch((error) => {
+                console.error('Delayed video play error:', error)
+              })
+            }
+          }, 500)
+        }
+      }, 100)
+    } catch (error) {
+      console.error('Failed to access camera:', error)
+      alert('Failed to access camera. Please check permissions.')
+    }
+  }
+
+  // Capture photo and get description
+  const capturePhoto = async () => {
+    if (!videoRef.current || !cameraStreamRef.current) {
+      alert('Camera not initialized. Please enable camera first.')
+      return
+    }
+
+    // Check if camera stream is still active
+    const activeTracks = cameraStreamRef.current.getVideoTracks().filter(track => track.readyState === 'live')
+    if (activeTracks.length === 0) {
+      alert('Camera stream is not active. Please enable camera again.')
+      // Try to reinitialize
+      await initializeCamera()
+      return
+    }
+
+    // Check if video is ready
+    const video = videoRef.current
+    if (video.readyState < video.HAVE_CURRENT_DATA) {
+      // Wait a bit for video to be ready
+      await new Promise(resolve => setTimeout(resolve, 200))
+      if (video.readyState < video.HAVE_CURRENT_DATA) {
+        alert('Camera is not ready. Please wait a moment and try again.')
+        return
+      }
+    }
+
+    // Ensure video dimensions are valid
+    if (video.videoWidth === 0 || video.videoHeight === 0) {
+      // Wait a bit and check again
+      await new Promise(resolve => setTimeout(resolve, 200))
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
+        alert('Camera video is not ready. Please wait and try again.')
+        return
+      }
+    }
+
+    setIsCapturing(true)
+    setImageDescription('')
+
+    try {
+      // Ensure video is playing
+      if (video.paused) {
+        await video.play()
+      }
+
+      // Wait a tiny bit to ensure frame is ready
+      await new Promise(resolve => setTimeout(resolve, 100))
+
+      // Create canvas to capture frame
+      const canvas = document.createElement('canvas')
+      canvas.width = video.videoWidth || 1280
+      canvas.height = video.videoHeight || 720
+      const ctx = canvas.getContext('2d')
+      
+      if (!ctx) {
+        throw new Error('Failed to get canvas context')
+      }
+
+      // Draw video frame to canvas
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+
+      // Convert to base64
+      const imageBase64 = canvas.toDataURL('image/jpeg', 0.9)
+
+      // Send to API for description
+      const response = await fetch('/api/vision/describe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64,
+          currentLanguage,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to get image description')
+      }
+
+      const data = await response.json()
+      setImageDescription(data.description)
+      setTranscript(data.description) // Also update transcript for consistency
+    } catch (error) {
+      console.error('Error capturing photo:', error)
+      alert('Failed to capture and describe image. Please try again.')
+    } finally {
+      setIsCapturing(false)
+    }
+  }
+
+  // Stop camera stream
+  const stopCamera = () => {
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((track) => track.stop())
+      cameraStreamRef.current = null
+      setCameraStream(null)
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+    }
   }
 
   const toggleVideo = async () => {
-    if (isRecording) {
-      // Stop current session and restart with new video state
-      await stopSession()
-      setIsVideoEnabled(!isVideoEnabled)
-      setTimeout(() => startSession(), 100)
+    // Disable video streaming - only use camera for photo capture
+    if (cameraStreamRef.current) {
+      stopCamera()
     } else {
-      setIsVideoEnabled(!isVideoEnabled)
+      await initializeCamera()
     }
   }
 
@@ -599,31 +776,58 @@ export function RealtimeMode() {
         {/* Instructions */}
         <div className="text-center">
           <p className="mb-2 text-lg font-medium">
-            {currentLanguage === 'kannada' ? 'Ask in Kannada' : `Ask in ${currentLanguage.charAt(0).toUpperCase() + currentLanguage.slice(1)}`}
+            {currentLanguage === 'kannada' 
+              ? 'ಕನ್ನಡದಲ್ಲಿ ಕೇಳಿ' 
+              : `Ask in ${languageNames[currentLanguage]}`}
           </p>
           <p className="text-muted-foreground">
             Tap the mic and ask a question
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
-            Current language: <span className="font-medium capitalize">{currentLanguage}</span>
+            Current language: <span className="font-medium">{languageNativeNames[currentLanguage]} ({languageNames[currentLanguage]})</span>
             {currentLanguage !== 'kannada' && (
-              <span className="ml-1">(Say "speak in kannada" to switch back)</span>
+              <span className="ml-1">• Say "speak in kannada" to switch back</span>
             )}
           </p>
         </div>
 
-        {/* Video/Audio Display */}
+        {/* Camera Preview / Audio Display */}
         <div className="relative aspect-video w-full overflow-hidden rounded-lg bg-gradient-to-br from-purple-500/20 via-blue-500/20 to-purple-500/20">
-          {isVideoEnabled && (
+          {cameraStream && (
             <video
               ref={videoRef}
               autoPlay
               playsInline
               muted
               className="h-full w-full object-cover"
+              style={{ display: 'block' }}
+              onLoadedMetadata={(e) => {
+                // Ensure video plays when metadata is loaded
+                const video = e.currentTarget
+                console.log('Video metadata loaded:', {
+                  videoWidth: video.videoWidth,
+                  videoHeight: video.videoHeight,
+                  readyState: video.readyState,
+                })
+                video.play().catch((error) => {
+                  console.error('Error auto-playing video:', error)
+                })
+              }}
+              onCanPlay={() => {
+                // Ensure video plays when it can play
+                if (videoRef.current && videoRef.current.paused) {
+                  videoRef.current.play().catch((error) => {
+                    console.error('Error playing video on canPlay:', error)
+                  })
+                }
+              }}
+              onError={(e) => {
+                console.error('Video element error:', e)
+                alert('Camera video error. Please try enabling camera again.')
+              }}
             />
           )}
-          {!isVideoEnabled && (
+          {!cameraStream && (
             <div className="flex h-full items-center justify-center">
               <div className="flex h-24 w-24 items-center justify-center rounded-full bg-primary/20">
                 <Mic className="h-12 w-12 text-primary" />
@@ -634,22 +838,6 @@ export function RealtimeMode() {
 
         {/* Controls */}
         <div className="flex items-center justify-center gap-4">
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={toggleVideo}
-            className={cn(
-              'h-14 w-14',
-              isVideoEnabled && 'bg-primary text-primary-foreground'
-            )}
-          >
-            {isVideoEnabled ? (
-              <Video className="h-6 w-6" />
-            ) : (
-              <VideoOff className="h-6 w-6" />
-            )}
-          </Button>
-
           <Button
             size="icon"
             onClick={isRecording ? stopSession : startSession}
@@ -672,20 +860,45 @@ export function RealtimeMode() {
             size="icon"
             className={cn(
               'h-14 w-14',
-              isVideoEnabled && 'bg-primary text-primary-foreground'
+              cameraStream && 'bg-primary text-primary-foreground'
             )}
             onClick={toggleVideo}
+            disabled={isCapturing}
           >
-            {isVideoEnabled ? (
-              <Camera className="h-6 w-6" />
+            {cameraStream ? (
+              <Video className="h-6 w-6" />
             ) : (
-              <Camera className="h-6 w-6 opacity-50" />
+              <Camera className="h-6 w-6" />
             )}
           </Button>
+
+          {cameraStream && (
+            <Button
+              variant="default"
+              size="icon"
+              className="h-14 w-14 bg-green-500 hover:bg-green-600"
+              onClick={capturePhoto}
+              disabled={isCapturing}
+            >
+              {isCapturing ? (
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-white border-t-transparent" />
+              ) : (
+                <Camera className="h-6 w-6" />
+              )}
+            </Button>
+          )}
         </div>
 
+        {/* Image Description Display */}
+        {imageDescription && (
+          <div className="rounded-lg border bg-muted/50 p-4">
+            <p className="text-sm font-medium mb-2">Object Description:</p>
+            <p className="text-sm">{imageDescription}</p>
+          </div>
+        )}
+
         {/* Transcript Display */}
-        {transcript && (
+        {transcript && !imageDescription && (
           <div className="rounded-lg border bg-muted/50 p-4">
             <p className="text-sm font-medium mb-2">Response:</p>
             <p className="text-sm">{transcript}</p>
